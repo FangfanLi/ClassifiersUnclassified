@@ -2,7 +2,9 @@ import sys,pickle,classifier_parser,runReplay,time,subprocess
 
 from collections import deque
 
-# Attention: User should provide the pcap folder in main
+# Attention: Before Use the code
+# User should provide the pcap folder in main
+# User should provide a way to deliver the created new pickle to the server side that let the server load the new pickle
 
 Replaycounter = 0
 
@@ -63,8 +65,8 @@ def detailAnalysis(PcapDirectory, Side, PacketNum, Length, Prot, original, analy
 # Make new pickle with specified changes and scp the new files to the server side
 def prepareNewpickle(PcapDirectory, Side,Num,Action,Prot,MList):
     classifier_parser.beingCalled(PcapDirectory, Side, Num, Action, Prot, MList)
-    # Deliver the new pickles to tuco
-    subprocess.call('scp '+PcapDirectory+'/*all.pickle tuco:/home/fangfan/Test', stdout=subprocess.PIPE , shell=True)
+    # Deliver the new pickles to the server
+    # e.g. subprocess.Popen('scp ...')
 
 # RPanalysis stands for Random Payload analysis
 # It would return the key regions by randomizing different part of the payload
