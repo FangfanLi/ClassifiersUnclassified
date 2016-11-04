@@ -1,10 +1,11 @@
-import sys,pickle,classifier_parser,runReplay,time,subprocess
+import sys,pickle,classifier_parser,runReplay,time,subprocess,itertools
 
 from collections import deque
 
 # Attention: Before Use the code
-# User should provide the pcap folder in main
-# User should provide a way to deliver the created new pickle to the server side that let the server load the new pickle
+# User should specify the pcap folder in main function
+# User should also provide a way to deliver the newly created pickle to server and let server load the new pickles in prepareNewpickle
+# Right now the pickle's directory is fixed
 
 Replaycounter = 0
 
@@ -58,7 +59,7 @@ def detailAnalysis(PcapDirectory, Side, PacketNum, Length, Prot, original, analy
         else:
             hasEffect.append(LeftB+num)
 
-    print '\n\t The change HAS Effect OR NOT',hasEffect,noEffect
+    print '\n\t The Change HAS Effect',hasEffect,'Do not have effect:',noEffect
     return hasEffect
 
 
@@ -131,6 +132,7 @@ def RPanalysis(PcapDirectory, Side, PacketNum, Length, Prot, original, csp):
     return allRegions
 
 
+
 def Replay(PcapDirectory,csp):
     global Replaycounter
     Replaycounter += 1
@@ -182,7 +184,6 @@ def FullAnalysis(PcapDirectory, meta,Classi_Origin,Protocol,Side,csp):
     Analysis = {}
     for packetNum in xrange(len(meta[Side])):
         Analysis[packetNum] = []
-        # Remember adding 1 to packetNumber before calling makeNewpickle
         # Skip removing this packet if it is the only one on Client side(otherwise the replay would not begin)
         if Side == 'Client' and len(meta[Side]) == 1 :
             Classi = ''
@@ -191,16 +192,14 @@ def FullAnalysis(PcapDirectory, meta,Classi_Origin,Protocol,Side,csp):
             prepareNewpickle(PcapDirectory, Side,packetNum + 1,'Delete',Protocol,[])
             Classi = Replay(PcapDirectory,csp)
         # if removing does not change classification
-
-
         if Classi == Classi_Origin:
             Analysis[packetNum]='removable'
+
         # Else do random payload analysis
+        # At Most try 3 times to confirm that the payload does not matter
         else:
             regions = []
             trial = 1
-            RClass = ''
-            # At Most try 3 times to confirm that the payload does not matter
             trialBar = 3
             while trial < trialBar:
                 prepareNewpickle(PcapDirectory, Side , packetNum + 1,'Random',Protocol,[])
@@ -223,9 +222,9 @@ def FullAnalysis(PcapDirectory, meta,Classi_Origin,Protocol,Side,csp):
 
     return Analysis
 
-
 def main(args):
-    # Please specify the PcapDirectory here
+
+    #   Please specify the Pcap Directory here
     PcapDirectory = ''
 
     try:
@@ -246,7 +245,7 @@ def main(args):
 
 
     meta,csp = GetMeta(PcapDirectory, Protocol)
-    print 'META DATA', meta, csp
+    print 'META DATA', meta
 
     # Get Original Classification
     global Replaycounter

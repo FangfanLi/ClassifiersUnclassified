@@ -4,45 +4,28 @@
 Arash Molavi Kakhki (arash@ccs.neu.edu)
 Northeastern University
 
-Goal: client replay script
+A library being called by other programs
 
-Usage:
-    python replay_parser.py --pcap_folder=[]
+the main function: beingCalled(Side, Num, Action, Prot, MList)
 
-Mandatory arguments:
+Side: 'Client' or 'Server'
 
-    pcap_folder: This is the folder containing pcap file and client_ip.txt
+Num: an int specifies which packet should be changed
 
-Optional arguments:
+Action: Delete : Delete the specified packet from the trace
+        Random : Randomize the whole packet and store the randomized packet into /random/randomClient.pickle and randomServer.pickle
+        Truncate : Change the packet to a packet with random MList[0] bytes
+        Move : Move the bytes between MList[0][0] to MList[0][1]
+        ReplaceW : Replace multiple region specified by the MList argument
+        ReplaceR : Replace multiple region with random bytes(random pickles) specified by the MList argument
 
-    MSide = Client or Server : This specifies which side of the trace this change is applying to
-    MNum : This specifies which packet on the side this change is applying to
-    MAct =  Delete : Delete the specified packet from the trace
-            Random : Randomize the whole packet and store the randomized packet into /random/randomClient.pickle and randomServer.pickle
-            Truncatex : Change the packet to a packet with random x bytes
-            Movex_y : Move the bytes between x y to the end of the packet
-            A/DReplaceWx_y.String : Add/Delete one region [x:y] in this packet to be replaced by String
-            A/DReplaceRx_y : Add/Delete one region[x:y] in this packet to be replaced by random payload stored in /random
+Prot: udp or tcp
 
-    MProt = tcp or udp : when making changes on the server side, need to specify the protocol
+MList: multiple usage list,
+    When used in ReplaceW, it should be {(x,y):'something'...}, which would replace the payload from x to y byte to 'something'
+    When used in ReplaceR, it should be {(x1,y1),(x2,y2)...}, which would replace the payload from x1 to y1 byte to
+    the random payload from x1 to y1 byte(loaded from random pickle) and so on...
 
-Ignored streams:
-    - Local (private) IPs
-    - Apple IPs (happens when recording on an Apple product, e.g. iPhone):
-        - 17.154.239.13, 17.172.239.39, 17.154.239.48, ... (check ipIgnoreList)
-    - Apple static:
-        - contains this:
-                GET /connectivity.txt HTTP/1.1
-                Host: static.ess.apple.com:80
-        -can't filter using IP address, because it's hosted on Akamai
-    
-
-IMPORTANT:  to make sure when parsing the random version of a pcap, skipped streams are consistant
-            between random and non-random, ALWAYS parse non-random first. The parser will dump an
-            object with contains skipped streams (streamSkippedList)
-            Then when doing the random parse (which has the same folder name plus a _random at the end)
-            it will look into the non-random parsed folder, loads streamSkippedList and makes sure to
-            also skip those streams.
 #######################################################################################################
 #######################################################################################################
 '''
@@ -208,7 +191,7 @@ def addUDPKeepAlives(udpClientQ):
             
     new_clientQ.sort(key=lambda x: x.timestamp)
      
-    PRINT_ACTION('Number of keep-alive packets added: '+str(keepAliveCount), 1, action=False)
+    # PRINT_ACTION('Number of keep-alive packets added: '+str(keepAliveCount), 1, action=False)
     
     return new_clientQ
 
@@ -541,7 +524,7 @@ def isLocal(ip):
 def Truncate(payload, Tbyte):
     # Truncate the payload to Tbyte
     if len(payload.decode('hex')) < Tbyte:
-        print '\n\t ***Attention*** Plen is',len(payload.decode('hex')),' Tbyte is ',Tbyte, 'Returning original payload'
+        print '\n\t ***Attention*** Plen is',len(payload),' Tbyte is ',Tbyte, 'Returning original payload'
         return payload
 
     trunPayload = ''.join(chr(random.getrandbits(8)) for x in range(Tbyte))
@@ -594,6 +577,7 @@ def Move(payload, L, R):
 
 def MultiReplace(payload, regions, rpayload):
     # When randomPayload is '', that means we need to replace payload with the strings stores in regions
+    # e.g. regions[(1,2):'haha']
     if rpayload == '':
         for region in regions:
             L = region[0]
@@ -621,6 +605,72 @@ def Replace(payload, L, R, replaceS):
         payload = LeftPad + replaceS + RightPad
     payload = payload.encode('hex')
     return payload
+
+def to_list(chain, offset):
+    return [chain[i:i+offset] for i in range(0, len(chain), offset)]
+
+# Bit hex string operations
+def bin2str(chain):
+    return ''.join((chr(int(chain[i:i+8], 2)) for i in range(0, len(chain), 8)))
+
+def bin2hex(chain):
+    return ''.join((hex(int(chain[i:i+8], 2))[2:] for i in range(0, len(chain), 8)))
+
+def str2bin(chain):
+    return ''.join((bin(ord(c))[2:].zfill(8) for c in chain))
+
+def str2hex(chain):
+    return ''.join((hex(ord(c))[2:] for c in chain))
+
+def hex2bin(chain):
+    return ''.join((bin(int(chain[i:i+2], 16))[2:].zfill(8) for i in range(0, len(chain), 2)))
+
+def hex2str(chain):
+    return ''.join((chr(int(chain[i:i+2], 16)) for i in range(0, len(chain), 2)))
+
+def XorPayload(payload):
+    payload = payload.decode('hex')
+    bpayload = str2bin(payload)
+    newb = ''
+    for char in bpayload:
+        if char == '0':
+            newb += '1'
+        else:
+            newb += '0'
+    newpayload = bin2str(newb).encode('hex')
+    return newpayload
+
+# Dump the packets with xored payload into /random directory
+def XorDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts):
+    if not os.path.isdir(configs.get('pcap_folder')+'/xor'):
+        os.makedirs(configs.get('pcap_folder')+'/xor')
+
+    pickle.dump((clientQ, udpClientPorts, list(tcpCSPs), replay_name)          ,
+                open((configs.get('pcap_folder')+'/xor/xorClient.pickle'), "w" ), 2)
+    pickle.dump((serverQ, LUT, getLUT, udpServers, tcpServerPorts, replay_name),
+                open((configs.get('pcap_folder')+'/xor/xorServer.pickle'), "w" ), 2)
+
+
+def XorLoad(configs, side, PacketNum, Protocol, csp):
+    # Client Side
+    if side == 'Client':
+        clientQ, udpClientPorts, tcpCSPs, replayName = \
+            pickle.load(open(configs.get('pcap_folder')+'/xor/xorClient.pickle','r'))
+
+        rpayload = clientQ[PacketNum-1].payload
+
+    # Server Side
+    else:
+        serverQ, tmpLUT, tmpgetLUT, udpServers, tcpServerPorts, replayName = \
+            pickle.load(open(configs.get('pcap_folder')+'/xor/xorServer.pickle','r'))
+
+        if Protocol == 'udp':
+            rpayload = serverQ[Protocol][csp][PacketNum-1].payload
+        else:
+            rpayload = serverQ[Protocol][csp][PacketNum-1].response_list[0].payload
+
+    return rpayload
+
 
 # Dump the packets with random payload into /random directory
 def RandomDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts):
@@ -652,41 +702,8 @@ def RandomLoad(configs, side, PacketNum, Protocol, csp):
 
     return rpayload
 
-# Modify a new region into the randomAnalysis.pickle
-def ModiRegion(configs, Action, L, R, ReplaceS):
-    if not os.path.isfile(configs.get('pcap_folder')+'/random/randomAnalysis.pickle'):
-        print '\n\t Creating randomAnalysis.pickle with ', L, R, ReplaceS
-        regions = {(L,R) : ReplaceS}
-        pickle.dump((regions),
-                open((configs.get('pcap_folder')+'/random/randomAnalysis.pickle'), "w" ), 2)
-        regions = \
-            pickle.load(open(configs.get('pcap_folder')+'/random/randomAnalysis.pickle','r'))
-
-    else:
-        # Load the existing data out
-        regions = \
-            pickle.load(open(configs.get('pcap_folder')+'/random/randomAnalysis.pickle','r'))
-
-        if Action == 'A':
-            # Add a new region into the regions
-            regions[(L,R)] = ReplaceS
-        else:
-            try:
-                del regions[(L,R)]
-            except:
-                print '\n\t ******Failed to delete region [',L,R,'], which is not in the regions',regions
-
-        # Dump the changed data back
-        pickle.dump((regions),
-            open((configs.get('pcap_folder')+'/random/randomAnalysis.pickle'), "w" ), 2)
-
-    return regions
-
-
-
-
-
-def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MList = []):
+def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MList = [],
+        RemainPackets = {'Client':[],'Server:':[]}):
     '''##########################################################'''
 
     # PRINT_ACTION('Reading configs and args', 0)
@@ -695,6 +712,7 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
     configs.set('randomPayload', False)
     configs.set('pureRandom'   , False)
 
+    
     try:
         onlyStreams = configs.get('onlyStreams').split(',')
     except KeyError:
@@ -704,7 +722,7 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
                                 #if you need to skip a stream, add it to streamIgnoreList 
     
     '''##########################################################'''
-    PRINT_ACTION('Locating necessary files', 0)
+    # PRINT_ACTION('Locating necessary files', 0)
     for file in os.listdir(configs.get('pcap_folder')):
         if file.endswith('.pcap'):
             if file.endswith('_no_retransmits.pcap'):
@@ -721,7 +739,7 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
     if configs.is_given('replay_name'):
         replay_name = configs.get('replay_name')
     replay_name = replay_name.replace('_', '-')
-    PRINT_ACTION('Replay name: '+replay_name, 0)
+    # PRINT_ACTION('Replay name: '+replay_name, 0)
     
     if not os.path.isfile(pcap_file):
         PRINT_ACTION('The folder is missing the pcap file! Exiting with error!', 1, action=False, exit=True)
@@ -729,23 +747,23 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
     if not os.path.isfile(client_ip_file):
         PRINT_ACTION('The folder is missing the client_ip file! Exiting with error!', 1, action=False, exit=True)
     else:
-        PRINT_ACTION('Reading client_ip', 0)
+        # PRINT_ACTION('Reading client_ip', 0)
         client_ip = read_client_ip(client_ip_file)
     
     '''##########################################################'''
-    PRINT_ACTION('Extracting payloads and streams', 0)
+    # PRINT_ACTION('Extracting payloads and streams', 0)
     
     if not os.path.isfile(packetMeta):
-        PRINT_ACTION('Creating packetMeta', 0)
+        # PRINT_ACTION('Creating packetMeta', 0)
         createPacketMeta(pcap_file, packetMeta)
     
     if not os.path.isdir(follow_folder_TCP):
-        PRINT_ACTION('TCP Follows folder does not exist. Creating the follows folder...', 0)
+        # PRINT_ACTION('TCP Follows folder does not exist. Creating the follows folder...', 0)
         os.makedirs(follow_folder_TCP)
         extractStreams(pcap_file, follow_folder_TCP, client_ip, 'TCP')
     
     if not os.path.isdir(follow_folder_UDP):
-        PRINT_ACTION('UDP Follows folder does not exist. Creating the follows folder...', 0)
+        # PRINT_ACTION('UDP Follows folder does not exist. Creating the follows folder...', 0)
         os.makedirs(follow_folder_UDP)
         UDPstreamsMap = mapUDPstream2csp(packetMeta, client_ip)
         extractStreams(pcap_file, follow_folder_UDP, client_ip, 'UDP', UDPstreamsMap=UDPstreamsMap)
@@ -838,16 +856,16 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
                 serverQ[dPacket.protocol][dPacket.csp].append( UDPset(payload, dPacket.timestamp-serversTimeOrigin[dPacket.protocol][dPacket.csp], dPacket.csp) )
             count += 1
 
-    PRINT_ACTION('Adding UDP keep-alive packets', 0)
+    # PRINT_ACTION('Adding UDP keep-alive packets', 0)
     udpClientQ = addUDPKeepAlives(udpClientQ)
     
-    PRINT_ACTION('Creating the hash Look-up Table', 0)
+    # PRINT_ACTION('Creating the hash Look-up Table', 0)
     LUT['udp'] = createHashLUT(udpClientQ, replay_name)
 
-    PRINT_ACTION('Sorting tcpMetas and tossing retransmissions', 0)
+    # PRINT_ACTION('Sorting tcpMetas and tossing retransmissions', 0)
     tcpMetas = sortAndClean(tcpMetas)
     
-    PRINT_ACTION('Creating TCP queues', 0)
+    # PRINT_ACTION('Creating TCP queues', 0)
     
     sample_size    = 400
     tcpClientQ     = []
@@ -869,12 +887,12 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
         if onlyStreams:
             if stream not in onlyStreams:
                 streamSkippedList.append(stream)
-                print '\t\tStream not in onlyStreams list, skipping'
+                # print '\t\tStream not in onlyStreams list, skipping'
                 continue 
         
         if stream in streamIgnoreList:
             streamSkippedList.append(stream)
-            print '\t\tStream in ignore list, skipping'
+            # print '\t\tStream in ignore list, skipping'
             continue
         
         [TMPclientQ, TMPserverQ, csp] = tcpStream2Qs(tcpMetas[stream], handles['tcp'][stream])
@@ -891,13 +909,13 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
 #         if serverIP in ipIgnoreList:
         if isInNetworks(serverIP, ipIgnoreList):
             streamSkippedList.append(stream)
-            print '\t\tIgnoring stream {}. Server IP in ignore list!'.format(csp)
+            # print '\t\tIgnoring stream {}. Server IP in ignore list!'.format(csp)
             continue
         
         #2- Request based filtering
         if 'Host: static.ess.apple.com:80' in TMPclientQ[0].payload.decode('hex'):
             streamSkippedList.append(stream)
-            print '\t\tIgnoring stream {}. apple static!'.format(csp)
+            # print '\t\tIgnoring stream {}. apple static!'.format(csp)
             continue
         '''
         ###############################
@@ -940,61 +958,76 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
     
     tcpClientQ.sort(key=lambda q: q.timestamp)
     
-    PRINT_ACTION('Merging UDP and TCP', 0)
+    # PRINT_ACTION('Merging UDP and TCP', 0)
     clientQ = tcpClientQ + udpClientQ
     clientQ.sort(key=lambda q: q.timestamp)
         
-    PRINT_ACTION('Serializing queues', 0)
+    # PRINT_ACTION('Serializing queues', 0)
     udpClientPorts = list(udpClientPorts) #JSON cannot serialize sets.
     tcpServerPorts = list(tcpServerPorts)
     for serverIP in udpServers:
         udpServers[serverIP] = list(udpServers[serverIP])
-    
-#     PRINT_ACTION('Serializing TCP', 1, action=False)
-#     pickle.dump((tcpClientQ, list(tcpCSPs) , replay_name)                , open((pcap_file+'_client_tcp.pickle'), "w" ), 2)
-#     pickle.dump((serverQ['tcp'], tcpServerPorts, replay_name, LUT['tcp']), open((pcap_file+'_server_tcp.pickle'), "w" ), 2)
-#     json.dump((tcpClientQ, list(tcpCSPs)   , replay_name)                , open((pcap_file+'_client_tcp.json'), "w") , cls=TCP_UDPjsonEncoder)
-#      
-#     PRINT_ACTION('Serializing UDP', 1, action=False)
-#     pickle.dump((udpClientQ, udpClientPorts, {}, replay_name)        , open((pcap_file+'_client_udp.pickle'), "w" ), 2)
-#     pickle.dump((serverQ['udp'], LUT['udp'], udpServers, replay_name), open((pcap_file+'_server_udp.pickle'), "w" ), 2)
-#     json.dump((udpClientQ, udpClientPorts, {}, replay_name)          , open((pcap_file+'_client_udp.json'), "w"), cls=TCP_UDPjsonEncoder)
 
-#     Make modifications before dumping them into pickles based on the protocol, side, packet number and action
-#     csp = serverQ['tcp'].keys()[0]
-    # For TCP, count the number of serverQ['tcp'][csp], make changes on serverQ['tcp'][csp][PacketNum].response_list[0].payload
-    # print '\n\t ****HERE WE GO...',serverQ['tcp'][csp][0].response_list[0].payload.decode('hex')
-    # print '\n\t ****HERE WE GO...',serverQ['tcp'][csp][0].response_list[0].payload,\
-    #     'Len :::',len(serverQ['tcp'][csp][0].response_list[0].payload) ,' \n\t decode Len :::',len(serverQ['tcp'][csp][0].response_list[0].payload)
+    # ******************************************************
+    # THE FOLLOWING CODE IS USED FOR MAKING CHANGES ON THE QS
+    # ******************************************************
+    # Make changes on the flow level
+    if RemainPackets != {'Client':[],'Server:':[]}:
+        if RemainPackets['Client'] != ['all']:
+            tempCQ = []
+            # preparing Qs by only keeping the packets that are not in remainPart
+            for num in RemainPackets['Client']:
+                tempCQ.append(clientQ[num])
+            # Update the Client Q
+            clientQ = tempCQ
+
+        if RemainPackets['Server'] == []:
+            csp = serverQ[MProtocol].keys()[0]
+            if MProtocol == 'udp':
+                serverQ[MProtocol][csp] = []
+            # TCP Analysis
+            # else:
+            #     for num in RemainPackets['Server']:
+            #         tempSQ.append(serverQ[MProtocol][csp][num].response_list[0])
+
+        elif RemainPackets['Server'] != ['all']:
+            tempSQ = []
+            csp = serverQ[MProtocol].keys()[0]
+            if MProtocol == 'udp':
+                for num in RemainPackets['Server']:
+                    tempSQ.append(serverQ[MProtocol][csp][num])
+            else:
+                for num in RemainPackets['Server']:
+                    tempSQ.append(serverQ[MProtocol][csp][num].response_list[0])
+            # Update the Server Q
+            serverQ[MProtocol][csp] = tempSQ
 
 
-    if configs.is_given('MSide') == True:
-        MSide = configs.get('MSide')
-        MPacketNum = configs.get('MNum')
-        MAction = configs.get('MAct')
+    # Make more changes on packet level
+    if MSide != '':
 
-#     modifications on the Client side is independent of the protocol
+        # modifications on the Client side is independent of the protocol
         if MSide == 'Client':
             print '\n\t Making Client changes ', MAction,'On packet',MPacketNum
             # print '\n\t Client packet', MPacketNum, ' Before ::',clientQ[MPacketNum-1].payload.decode('hex')
 
             if 'Random' in MAction:
-                clientQ[MPacketNum-1].payload = Randomize(clientQ[MPacketNum-1].payload)
+
+                clientQ[MPacketNum-1].payload = XorPayload(clientQ[MPacketNum-1].payload)
+
                 # print '\n\t After randomization ::',clientQ[MPacketNum-1].payload.decode('hex')
             #     Store the Qs with randomized packet into the /random dir, which will be loaded in RandomReplace
                 print '\n\t Dumping the random payload into /random'
-                RandomDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts)
+                XorDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts)
 
 
             elif 'Truncate' in MAction:
-                Tbyte = int(MAction.split('Truncate')[1])
+                Tbyte = MList[0]
                 clientQ[MPacketNum-1].payload = Truncate(clientQ[MPacketNum-1].payload, Tbyte)
                 # print '\n\t After truncating ::',clientQ[MPacketNum-1].payload.decode('hex')
 
             elif 'Move' in MAction:
-                Lbyte = int(MAction.split('Move')[1].split('_')[0])
-                Rbyte = int(MAction.split('Move')[1].split('_')[1])
-                clientQ[MPacketNum-1].payload = Move(clientQ[MPacketNum-1].payload, Lbyte, Rbyte)
+                clientQ[MPacketNum-1].payload = Move(clientQ[MPacketNum-1].payload, MList[0][0], MList[0][1])
                 # print '\n\t After moving ::',clientQ[MPacketNum-1].payload.decode('hex')
 
             elif 'Delete' in MAction:
@@ -1003,36 +1036,28 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
                 # print '\n\t Client Q after deleting ::',clientQ
 
             elif 'ReplaceW' in MAction:
-                Lbyte = int(MAction.split('ReplaceW')[1].split('_')[0])
-                Rbyte = int(MAction.split('ReplaceW')[1].split('_')[1].split('.')[0])
-                replaceS = MAction.split('ReplaceW')[1].split('_')[1].split('.')[1]
-                Action = MAction.split('ReplaceW')[0]
-                regions = ModiRegion(configs, Action, Lbyte, Rbyte, replaceS)
+                regions = MList
                 clientQ[MPacketNum-1].payload = MultiReplace(clientQ[MPacketNum-1].payload, regions, '')
                 print '\n\t After ReplaceW ::',clientQ[MPacketNum-1].payload.decode('hex')
 
             elif 'ReplaceR' in MAction:
-                Lbyte = int(MAction.split('ReplaceR')[1].split('_')[0])
-                Rbyte = int(MAction.split('ReplaceR')[1].split('_')[1])
-                Action = MAction.split('ReplaceR')[0]
-                regions = ModiRegion(configs, Action, Lbyte, Rbyte,'')
-                rpayload = RandomLoad(configs, MSide, MPacketNum, 'client', 'client')
-                rpayload = rpayload.decode('hex')
 
-                print '\n\t FYI BEFORE ', clientQ[MPacketNum-1].payload, len(clientQ[MPacketNum-1].payload)
+                regions = MList
+
+                rpayload = XorLoad(configs, MSide, MPacketNum, 'client', 'client')
+                rpayload = rpayload.decode('hex')
 
                 clientQ[MPacketNum-1].payload = MultiReplace(clientQ[MPacketNum-1].payload, regions, rpayload)
 
-                print '\n\t FYI AFTER', clientQ[MPacketNum-1].payload, len(clientQ[MPacketNum-1].payload)
 
             else:
-                print '\n\t MAction is ',MAction,'No such action specified yet.'
+
+                print '\n\t MAction is ',MAction,'No such action specified yet. No ACTION taken'
 
 
 # The procotol needs to be specified when making changes on the server side
 
         elif MSide == 'Server':
-            MProtocol = configs.get('MProt')
 
             print '\n\t Making changes on Server', MProtocol, MAction,'On packet',MPacketNum
 
@@ -1044,22 +1069,20 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
 
                 if 'Random' in MAction:
                     serverQ[MProtocol][csp][MPacketNum-1].payload = \
-                        Randomize(serverQ[MProtocol][csp][MPacketNum-1].payload)
+                        XorPayload(serverQ[MProtocol][csp][MPacketNum-1].payload)
                     # print '\n\t After randomization ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
                     print '\n\t Dumping the random payload into /random'
-                    RandomDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts)
+                    XorDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts)
 
                 elif 'Truncate' in MAction:
-                    Tbyte = int(MAction.split('Truncate')[1])
+                    Tbyte = MList[0]
                     serverQ[MProtocol][csp][MPacketNum-1].payload = \
                         Truncate(serverQ[MProtocol][csp][MPacketNum-1].payload, Tbyte)
                     # print '\n\t After truncating ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
 
                 elif 'Move' in MAction:
-                    Lbyte = int(MAction.split('Move')[1].split('_')[0])
-                    Rbyte = int(MAction.split('Move')[1].split('_')[1])
                     serverQ[MProtocol][csp][MPacketNum-1].payload = \
-                        Move(serverQ[MProtocol][csp][MPacketNum-1].payload, Lbyte, Rbyte)
+                        Move(serverQ[MProtocol][csp][MPacketNum-1].payload, MList[0][0], MList[0][1])
                     # print '\n\t After moving ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
 
                 elif 'Delete' in MAction:
@@ -1068,48 +1091,44 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
                     # print '\n\t Server Q after deleting ::',serverQ[MProtocol][csp]
 
                 elif 'ReplaceW' in MAction:
-                    Lbyte = int(MAction.split('ReplaceW')[1].split('_')[0])
-                    Rbyte = int(MAction.split('ReplaceW')[1].split('_')[1].split('.')[0])
-                    replaceS = MAction.split('ReplaceW')[1].split('_')[1].split('.')[1]
+                    regions = MList
                     serverQ[MProtocol][csp][MPacketNum-1].payload = \
-                        Replace(serverQ[MProtocol][csp][MPacketNum-1].payload, Lbyte, Rbyte, replaceS)
+                        MultiReplace(serverQ[MProtocol][csp][MPacketNum-1].payload, regions, '')
                     print '\n\t After ReplaceW ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
 
                 elif 'ReplaceR' in MAction:
-                    Lbyte = int(MAction.split('ReplaceR')[1].split('_')[0])
-                    Rbyte = int(MAction.split('ReplaceR')[1].split('_')[1])
-                    rpayload = RandomLoad(configs, MSide, MPacketNum, 'udp', csp)
+                    regions = MList
+                    rpayload = XorLoad(configs, MSide, MPacketNum, 'udp', csp)
                     rpayload = rpayload.decode('hex')
                     serverQ[MProtocol][csp][MPacketNum-1].payload = \
-                        Replace(serverQ[MProtocol][csp][MPacketNum-1].payload, Lbyte, Rbyte, rpayload[Lbyte:Rbyte])
+                        MultiReplace(serverQ[MProtocol][csp][MPacketNum-1].payload,regions, rpayload)
 
                 else:
-                    print '\n\t MAction is ',MAction,'No such action specified yet.'
+
+                    print '\n\t MAction is ',MAction,'No such action specified yet. No ACTION taken'
 
             #TCP server changes
             else:
                 csp = serverQ[MProtocol].keys()[0]
                 # For TCP, count the number of serverQ['tcp'][csp], make changes on serverQ['tcp'][csp][PacketNum].response_list[0].payload
-                print '\n\t Server packet', MPacketNum, ' Before ::',serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload.decode('hex')
+                # print '\n\t Server packet', MPacketNum, ' Before ::',serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload.decode('hex')
 
                 if 'Random' in MAction:
                     serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload = \
                         Randomize(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload)
                     # print '\n\t After randomization ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
                     print '\n\t Dumping the random payload into /random'
-                    RandomDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts)
+                    XorDump(configs, clientQ, udpClientPorts, tcpCSPs, replay_name, serverQ, LUT, getLUT, udpServers, tcpServerPorts)
 
                 elif 'Truncate' in MAction:
-                    Tbyte = int(MAction.split('Truncate')[1])
+                    Tbyte = MList[0]
                     serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload = \
                         Truncate(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, Tbyte)
                     # print '\n\t After truncating ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
 
                 elif 'Move' in MAction:
-                    Lbyte = int(MAction.split('Move')[1].split('_')[0])
-                    Rbyte = int(MAction.split('Move')[1].split('_')[1])
                     serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload = \
-                        Move(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, Lbyte, Rbyte)
+                        Move(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, MList[0][0], MList[0][1])
                     # print '\n\t After moving ::',serverQ[MProtocol][csp][MPacketNum-1].payload.decode('hex')
 
                 elif 'Delete' in MAction:
@@ -1118,66 +1137,31 @@ def run(directory, MSide = '', MPacketNum = 0, MAction = '', MProtocol = '', MLi
                     # print '\n\t Server Q after deleting ::',serverQ[MProtocol][csp]
 
                 elif 'ReplaceW' in MAction:
-                    Lbyte = int(MAction.split('ReplaceW')[1].split('_')[0])
-                    Rbyte = int(MAction.split('ReplaceW')[1].split('_')[1].split('.')[0])
-                    replaceS = MAction.split('ReplaceW')[1].split('_')[1].split('.')[1]
+                    regions = MList
                     serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload = \
-                        Replace(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, Lbyte, Rbyte, replaceS)
+                        MultiReplace(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, regions, '')
                     print '\n\t After ReplaceW ::',serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload.decode('hex')
 
                 elif 'ReplaceR' in MAction:
-                    Lbyte = int(MAction.split('ReplaceR')[1].split('_')[0])
-                    Rbyte = int(MAction.split('ReplaceR')[1].split('_')[1])
-                    rpayload = RandomLoad(configs, MSide, MPacketNum, 'tcp', csp)
+                    regions = MList
+                    rpayload = XorLoad(configs, MSide, MPacketNum, 'udp', csp)
                     rpayload = rpayload.decode('hex')
                     serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload = \
-                        Replace(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, Lbyte, Rbyte, rpayload[Lbyte:Rbyte])
+                        MultiReplace(serverQ[MProtocol][csp][MPacketNum-1].response_list[0].payload, regions, rpayload)
 
                 else:
-                    print '\n\t MAction is ',MAction,'No such action specified yet.'
+                    print '\n\t MAction is ',MAction,'No such action specified yet. No ACTION taken'
+    # ***********************************************
 
-
-    # print '\n\t ******Attention****** SERVERQ'
-    #
-    # for p in serverQ['udp']['010.011.004.003.35839-072.069.083.117.05453']:
-    #     print '\n\t ',p.payload,'\n\t Length',len(p.payload)
-
-    PRINT_ACTION('Serializing all', 1, action=False)
-
-    # print '\n\t******* TCPS',tcpCSPs
     pickle.dump(streamSkippedList, open((configs.get('pcap_folder')+'/streamSkippedList.pickle'), "w" ), 2)
     pickle.dump((clientQ, udpClientPorts, list(tcpCSPs), replay_name)          , open((pcap_file+'_client_all.pickle'), "w" ), 2)
     pickle.dump((serverQ, LUT, getLUT, udpServers, tcpServerPorts, replay_name), open((pcap_file+'_server_all.pickle'), "w" ), 2)
-    # json.dump((clientQ, udpClientPorts, list(tcpCSPs), replay_name)            , open((pcap_file+'_client_all.json'), "w"), cls=TCP_UDPjsonEncoder)
 
 
-    PRINT_ACTION('Stats:', 0, action=True)
-    serverSideCount = {}
-    for protocol in serverQ:
-        serverSideCount[protocol] = 0
-        for csp in serverQ[protocol]:
-            serverSideCount[protocol] += len(serverQ[protocol][csp]) 
-            
-    
-    print '\t#Client packets: {} (TCP: {}, UDP: {}) '.format(len(clientQ), len(tcpClientQ), len(udpClientQ))
-    print '\t#Server packets: {} (TCP: {}, UDP: {}) '.format(serverSideCount['tcp']+serverSideCount['udp'], serverSideCount['tcp'], serverSideCount['udp'])
-    print '\t#UDP client ports:', len(udpClientPorts)
-    print '\t#TCP CSPs:        ', len(serverQ['tcp'])
-    print '\t#UDP CSPs:        ', len(serverQ['udp'])
-    print '\t#UDP servers:     ', len(udpServers)
-    print '\t#TCP server ports:', len(list(tcpServerPorts))
-    print '\tstreamSkippedList:', streamSkippedList
-
-    print 'onlyStreams:', onlyStreams
-
-def beingCalled(PcapDirectory, Side, Num, Action, Prot='tcp', Mlist = []):
+def beingCalled(PcapDirectory, Side, Num, Action, Prot='tcp', Mlist = [],
+                RemainPackets = {'Client':[],'Server':[]}):
     PcapDirectory = PcapDirectory+'/'
+    run(PcapDirectory, Side, Num, Action, Prot, Mlist,RemainPackets)
 
-    run(PcapDirectory, Side, Num, Action, Prot, Mlist)
 
 
-def main():
-    run(sys.argv)
-
-if __name__=="__main__":
-    main()
