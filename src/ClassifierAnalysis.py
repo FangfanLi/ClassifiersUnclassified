@@ -253,8 +253,8 @@ def runReplay(PcapDirectory, pacmodify, analyzerI):
     # replayResult is whether the replay finished, used for testing censorship
     # Classify_result = (replayResult, analyzerResult)
 
-    # Give 15s for the server to process the result and insert metrics into the database
-    time.sleep(15)
+    # Give 20s for the server to process the result and insert metrics into the database
+    time.sleep(20)
     PRINT_ACTION('Fetching analysis result from the analyzer server',0)
     res = analyzerI.getSingleResult(permaData.id, permaData.historyCount, configs.get('testID'))
 
